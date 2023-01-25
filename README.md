@@ -1,5 +1,5 @@
 
-# This is data masking project
+# S3 data masking in AWS using DataBrew and Step Function
 
 The goal of the project is to provision AWS Infra that would allow to read files from S3 bucket and analyze it with AWS DataBrew.
 If sensitive has been found in the file, it would be masked using DataBrew masking recipe.
@@ -50,3 +50,6 @@ command.
 One step function is used for the one-off history ingestion while the other one is being triggered by the object created in the S3 bucket and used for ongoing ingestion
 The expected S3 path is <data_source_name>/file_name.parquet
 File is expected to be in parquet format however it can be re-adjusted and used for json or csv formats.
+
+## Reference
+Used AWS blog post as a starting point - https://aws.amazon.com/blogs/big-data/introducing-pii-data-identification-and-handling-using-aws-glue-databrew/

@@ -282,7 +282,7 @@ def build_ongoing_ingest_step_function(lambda_arn, metadata_bucket, source_bucke
                         "Next": "UpdateRecipeJob"
                     }
                 ],
-                "Default": "Dataset Selection"
+                "Default": "Create Glue DataBrew PII Data Masking Recipe"
             },
             "UpdateRecipeJob": {
                 "Type": "Task",
@@ -310,17 +310,6 @@ def build_ongoing_ingest_step_function(lambda_arn, metadata_bucket, source_bucke
                     "Name.$": "States.Format('{}-PII-Masking-Job',States.ArrayGetItem(States.StringSplit($.Dataset.Name, '-'), 0))"
                 }
             },
-            "Dataset Selection": {
-                "Type": "Choice",
-                "Choices": [
-                    {
-                        "Variable": "$.Dataset.Name",
-                        "StringEquals": "customeraccount",
-                        "Next": "Create Glue DataBrew PII Data Masking Recipe"
-                    }
-                ],
-                "Default": "Create Glue DataBrew PII Data Masking Recipe (1)"
-            },
             "Create Glue DataBrew PII Data Masking Recipe": {
                 "Type": "Task",
                 "Parameters": {
@@ -334,17 +323,6 @@ def build_ongoing_ingest_step_function(lambda_arn, metadata_bucket, source_bucke
                                     "sourceColumns.$": "$.LambdaTaskResult.pii-columns"
                                 }
                             }
-                        },
-                        {
-                            "Action": {
-                                "Operation": "CRYPTOGRAPHIC_HASH",
-                                "Parameters": {
-                                    "secretId": secret_arn,
-                                    "sourceColumns": [
-                                        "IrdNumber"
-                                    ]
-                                }
-                            }
                         }
                     ]
                 },
@@ -354,26 +332,6 @@ def build_ongoing_ingest_step_function(lambda_arn, metadata_bucket, source_bucke
             },
             "No PII Data is Found": {
                 "Type": "Succeed"
-            },
-            "Create Glue DataBrew PII Data Masking Recipe (1)": {
-                "Type": "Task",
-                "Parameters": {
-                    "Name.$": "States.Format('{}-PII-Masking-Recipe',$.Dataset.Name)",
-                    "Steps": [
-                        {
-                            "Action": {
-                                "Operation": "CRYPTOGRAPHIC_HASH",
-                                "Parameters": {
-                                    "secretId": secret_arn,
-                                    "sourceColumns.$": "$.LambdaTaskResult.pii-columns"
-                                }
-                            }
-                        }
-                    ]
-                },
-                "Resource": "arn:aws:states:::aws-sdk:databrew:createRecipe",
-                "Next": "Create Glue DataBrew Project",
-                "ResultPath": "$.Recipe"
             },
             "Create Glue DataBrew Project": {
                 "Type": "Task",
@@ -730,7 +688,7 @@ def build_history_ingest_step_function(lambda_arn, metadata_bucket, source_bucke
                                     "Next": "UpdateRecipeJob"
                                 }
                             ],
-                            "Default": "Dataset Selection"
+                            "Default": "Create Glue DataBrew PII Data Masking Recipe"
                         },
                         "UpdateRecipeJob": {
                             "Type": "Task",
@@ -751,49 +709,7 @@ def build_history_ingest_step_function(lambda_arn, metadata_bucket, source_bucke
                             "Resource": "arn:aws:states:::aws-sdk:databrew:updateRecipeJob",
                             "ResultPath": "$.UpdateRecipe"
                         },
-                        "Dataset Selection": {
-                            "Type": "Choice",
-                            "Choices": [
-                                {
-                                    "Variable": "$.detail.DatasetName",
-                                    "StringEquals": "CustomerAccount",
-                                    "Next": "Create Glue DataBrew PII Data Masking Recipe"
-                                }
-                            ],
-                            "Default": "Create Glue DataBrew PII Data Masking Recipe (1)"
-                        },
                         "Create Glue DataBrew PII Data Masking Recipe": {
-                            "Type": "Task",
-                            "Parameters": {
-                                "Name.$": "States.Format('{}-PII-Masking-Recipe',$.detail.DatasetName)",
-                                "Steps": [
-                                    {
-                                        "Action": {
-                                            "Operation": "CRYPTOGRAPHIC_HASH",
-                                            "Parameters": {
-                                                "secretId": secret_arn,
-                                                "sourceColumns.$": "$.LambdaTaskResult.pii-columns"
-                                            }
-                                        }
-                                    },
-                                    {
-                                        "Action": {
-                                            "Operation": "CRYPTOGRAPHIC_HASH",
-                                            "Parameters": {
-                                                "secretId": secret_arn,
-                                                "sourceColumns": [
-                                                    "IrdNumber"
-                                                ]
-                                            }
-                                        }
-                                    }
-                                ]
-                            },
-                            "Resource": "arn:aws:states:::aws-sdk:databrew:createRecipe",
-                            "ResultPath": "$.Recipe",
-                            "Next": "Create Glue DataBrew Project"
-                        },
-                        "Create Glue DataBrew PII Data Masking Recipe (1)": {
                             "Type": "Task",
                             "Parameters": {
                                 "Name.$": "States.Format('{}-PII-Masking-Recipe',$.detail.DatasetName)",

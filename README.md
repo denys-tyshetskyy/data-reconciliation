@@ -1,18 +1,8 @@
 
-# Welcome to your CDK Python project!
+# This is data masking project
 
-This is a blank project for CDK development with Python.
-
-The `cdk.json` file tells the CDK Toolkit how to execute your app.
-
-This project is set up like a standard Python project.  The initialization
-process also creates a virtualenv within this project, stored under the `.venv`
-directory.  To create the virtualenv it assumes that there is a `python3`
-(or `python` for Windows) executable in your path with access to the `venv`
-package. If for any reason the automatic creation of the virtualenv fails,
-you can create the virtualenv manually.
-
-To manually create a virtualenv on MacOS and Linux:
+The goal of the project is to provision AWS Infra that would allow to read files from S3 bucket and analyze it with AWS DataBrew.
+If sensitive has been found in the file, it would be masked using DataBrew masking recipe.
 
 ```
 $ python -m venv .venv
@@ -55,4 +45,5 @@ command.
  * `cdk diff`        compare deployed stack with current state
  * `cdk docs`        open CDK documentation
 
-Enjoy!
+
+## Useful commands

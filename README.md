@@ -46,4 +46,7 @@ command.
  * `cdk docs`        open CDK documentation
 
 
-## Useful commands
+## Logic explained
+One step function is used for the one-off history ingestion while the other one is being triggered by the object created in the S3 bucket and used for ongoing ingestion
+The expected S3 path is <data_source_name>/file_name.parquet
+File is expected to be in parquet format however it can be re-adjusted and used for json or csv formats.

@@ -1,3 +1,4 @@
+"""Triggered by the object being uploaded into the source S3 bucket"""
 def build_ongoing_ingest_step_function(lambda_arn, metadata_bucket, source_bucket, target_bucket,
                                        databrew_role_arn, secret_arn):
     return {
@@ -19,7 +20,7 @@ def build_ongoing_ingest_step_function(lambda_arn, metadata_bucket, source_bucke
                 "Type": "Task",
                 "Next": "Choice Dataset",
                 "Parameters": {
-                    "Name.$": "States.ArrayGetItem(States.StringSplit($.detail.object.key, '/'), 2)"
+                    "Name.$": "States.ArrayGetItem(States.StringSplit($.detail.object.key, '/'), 0)"
                 },
                 "Resource": "arn:aws:states:::aws-sdk:databrew:describeDataset",
                 "ResultPath": "$.Dataset",
@@ -43,7 +44,7 @@ def build_ongoing_ingest_step_function(lambda_arn, metadata_bucket, source_bucke
                     }
                 ],
                 "ResultSelector": {
-                    "filename.$": "States.ArrayGetItem(States.StringSplit($.Input.S3InputDefinition.Key, '/'), 4)",
+                    "filename.$": "States.ArrayGetItem(States.StringSplit($.Input.S3InputDefinition.Key, '/'), 1)",
                     "Name.$": "$.Name"
                 }
             },
@@ -67,7 +68,7 @@ def build_ongoing_ingest_step_function(lambda_arn, metadata_bucket, source_bucke
                             "Key.$": "$.detail.object.key"
                         }
                     },
-                    "Name.$": "States.ArrayGetItem(States.StringSplit($.detail.object.key, '/'), 2)"
+                    "Name.$": "States.ArrayGetItem(States.StringSplit($.detail.object.key, '/'), 0)"
                 },
                 "Resource": "arn:aws:states:::aws-sdk:databrew:createDataset",
                 "Next": "Create Glue DataBrew Profile Job",
@@ -293,7 +294,7 @@ def build_ongoing_ingest_step_function(lambda_arn, metadata_bucket, source_bucke
                             "Format": "PARQUET",
                             "Location": {
                                 "Bucket": target_bucket,
-                                "Key.$": "States.Format('{}/{}/{}/{}/{}',States.ArrayGetItem(States.StringSplit($.detail.object.key, '/'), 0),States.ArrayGetItem(States.StringSplit($.detail.object.key, '/'), 1), States.ArrayGetItem(States.StringSplit($.detail.object.key, '/'), 2),States.ArrayGetItem(States.StringSplit($.detail.object.key, '/'), 3), $.Dataset.filename)"
+                                "Key.$": "States.Format('{}/{}',States.ArrayGetItem(States.StringSplit($.detail.object.key, '/'), 0),States.ArrayGetItem(States.StringSplit($.detail.object.key, '/'), 1))"
                             }
                         }
                     ],
@@ -355,7 +356,7 @@ def build_ongoing_ingest_step_function(lambda_arn, metadata_bucket, source_bucke
                             "Format": "PARQUET",
                             "Location": {
                                 "Bucket": target_bucket,
-                                "Key.$": "States.Format('{}/{}/{}/{}/{}',States.ArrayGetItem(States.StringSplit($.detail.object.key, '/'), 0),States.ArrayGetItem(States.StringSplit($.detail.object.key, '/'), 1), States.ArrayGetItem(States.StringSplit($.detail.object.key, '/'), 2),States.ArrayGetItem(States.StringSplit($.detail.object.key, '/'), 3), $.Dataset.filename)"
+                                "Key.$": "States.Format('{}/{}',States.ArrayGetItem(States.StringSplit($.detail.object.key, '/'), 0),States.ArrayGetItem(States.StringSplit($.detail.object.key, '/'), 1))"
                             }
                         }
                     ],
@@ -398,6 +399,7 @@ def build_ongoing_ingest_step_function(lambda_arn, metadata_bucket, source_bucke
     }
 
 
+"""Manually triggered for one-off consumption of all objects from source s3"""
 def build_history_ingest_step_function(lambda_arn, metadata_bucket, source_bucket, target_bucket, databrew_role_arn, secret_arn):
     return {
         "Comment": "Automatically detect PII columns of data files in existing files located in S3 and reproduce the data files with PII columns masked.",
@@ -426,7 +428,7 @@ def build_history_ingest_step_function(lambda_arn, metadata_bucket, source_bucke
                         "DescribeDataset": {
                             "Type": "Task",
                             "Parameters": {
-                                "Name.$": "States.ArrayGetItem(States.StringSplit($.Key, '/'), 2)"
+                                "Name.$": "States.ArrayGetItem(States.StringSplit($.Key, '/'), 0)"
                             },
                             "Resource": "arn:aws:states:::aws-sdk:databrew:describeDataset",
                             "ResultPath": "$.detail",
@@ -476,10 +478,10 @@ def build_history_ingest_step_function(lambda_arn, metadata_bucket, source_bucke
                                 "Input": {
                                     "S3InputDefinition": {
                                         "Bucket": source_bucket,
-                                        "Key.$": "States.Format('{}/{}/{}/<.*>/<.*>.parquet',States.ArrayGetItem(States.StringSplit($.Key, '/'), 0),States.ArrayGetItem(States.StringSplit($.Key, '/'), 1), States.ArrayGetItem(States.StringSplit($.Key, '/'), 2))"
+                                        "Key.$": "States.Format('{}/<.*>.parquet',States.ArrayGetItem(States.StringSplit($.Key, '/'), 0))"
                                     }
                                 },
-                                "Name.$": "States.ArrayGetItem(States.StringSplit($.Key, '/'), 2)"
+                                "Name.$": "States.ArrayGetItem(States.StringSplit($.Key, '/'),0)"
                             },
                             "Resource": "arn:aws:states:::aws-sdk:databrew:createDataset",
                             "Next": "Create Glue DataBrew Profile Job",
@@ -699,7 +701,7 @@ def build_history_ingest_step_function(lambda_arn, metadata_bucket, source_bucke
                                         "Format": "PARQUET",
                                         "Location": {
                                             "Bucket": target_bucket,
-                                            "Key.$": "States.Format('{}/{}/{}/{}/',States.ArrayGetItem(States.StringSplit($.Key, '/'), 0),States.ArrayGetItem(States.StringSplit($.Key, '/'), 1), States.ArrayGetItem(States.StringSplit($.Key, '/'), 2),States.ArrayGetItem(States.StringSplit($.Key, '/'), 3))"
+                                            "Key.$": "States.Format('{}/{}',States.ArrayGetItem(States.StringSplit($.Key, '/'), 0),States.ArrayGetItem(States.StringSplit($.Key, '/'), 1))"
                                         }
                                     }
                                 ],
@@ -751,7 +753,7 @@ def build_history_ingest_step_function(lambda_arn, metadata_bucket, source_bucke
                                         "Format": "PARQUET",
                                         "Location": {
                                             "Bucket": target_bucket,
-                                            "Key.$": "States.Format('{}/{}/{}/{}/{}',States.ArrayGetItem(States.StringSplit($.Key, '/'), 0),States.ArrayGetItem(States.StringSplit($.Key, '/'), 1), States.ArrayGetItem(States.StringSplit($.Key, '/'), 2),States.ArrayGetItem(States.StringSplit($.Key, '/'), 3),States.ArrayGetItem(States.StringSplit($.Key, '/'), 4))"
+                                            "Key.$": "States.Format('{}/{}',States.ArrayGetItem(States.StringSplit($.Key, '/'), 0),States.ArrayGetItem(States.StringSplit($.Key, '/'), 1))"
                                         }
                                     }
                                 ],

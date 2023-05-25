@@ -1,8 +1,8 @@
 
-# S3 data masking in AWS using DataBrew and Step Function
+# Data reconciliation between source DB and S3 bucket in AWS using Athena Federated query and Step Function
 
-The goal of the project is to provision AWS Infra that would allow to read files from S3 bucket and analyze it with AWS DataBrew.
-If sensitive has been found in the file, it would be masked using DataBrew masking recipe.
+The goal of the project is to provision AWS infrastructure that would allow to reconcile data between source RDBMS and S3 bucket where that data has been ingested into by DMS from the source DB.
+It would allow to provide the confidence that DMS data movement works as intended. It also provides a good example how athena federated query can be utilized with step function and data lake.
 
 ```
 $ python -m venv .venv
@@ -47,9 +47,15 @@ command.
 
 
 ## Logic explained
-One step function is used for the one-off history ingestion while the other one is being triggered by the object created in the S3 bucket and used for ongoing ingestion
-The expected S3 path is <data_source_name>/file_name.parquet
-File is expected to be in parquet format however it can be re-adjusted and used for json or csv formats.
+1. First we run the crawler to make sure that all the latest data ingested into S3 by DMS can be discovered by Athena
+2. In the map element we increment through all the prefixes in s3 bucket to run reconciliation for every single object.
+3. Given that the number of the columns might differ between source table in RDBMS and ingested s3 entity (we create additional column with dms_ingestion_time), we first query the list of columns for every 
+data source we are looking to compare.
+4. We build a dynamic query based on the set of columns identified and select all the columns from the source table and RDBMS using the federated data source we created in athena 
+and compare the result of the query with the result of the query against the Glue Data Catalog that Crawler created.
+5. We expect to have empty result which would confirm that every record in DB table has a corresponding record in Data Catalog.
 
+## Note
+Provisioning of DMS and the target S3 bucket is outside of the scope of this project
 ## Reference
-Used AWS blog post as a starting point - https://aws.amazon.com/blogs/big-data/introducing-pii-data-identification-and-handling-using-aws-glue-databrew/
+About Athena federated query - https://aws.amazon.com/blogs/big-data/query-any-data-source-with-amazon-athenas-new-federated-query/

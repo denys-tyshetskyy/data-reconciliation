@@ -1,410 +1,63 @@
-"""Triggered by the object being uploaded into the source S3 bucket"""
-def build_ongoing_ingest_step_function(lambda_arn, metadata_bucket, source_bucket, target_bucket,
-                                       databrew_role_arn, secret_arn):
+def build_reconciliation_step_function(bucket_name, bucket_prefix, result_bucket, lambda_arn, crawler_name, athena_datasource_name, catalog_db_name):
     return {
-        "Comment": "Automatically detect PII columns of data files loaded into S3 and reproduce the data files with PII columns masked.",
-        "StartAt": "Choice",
+        "Comment": "Reconciliation state machine",
+        "StartAt": "StartCrawler",
         "States": {
-            "Choice": {
-                "Type": "Choice",
-                "Choices": [
-                    {
-                        "Variable": "$.detail.object.key",
-                        "StringMatches": "*.parquet",
-                        "Next": "DescribeDataset"
-                    }
-                ],
-                "Default": "Successfully Mask PII Data"
+            "StartCrawler": {
+              "Type": "Task",
+              "Next": "Wait (3)",
+              "Parameters": {
+                "Name": crawler_name
+              },
+              "Resource": "arn:aws:states:::aws-sdk:glue:startCrawler"
             },
-            "DescribeDataset": {
-                "Type": "Task",
-                "Next": "Choice Dataset",
-                "Parameters": {
-                    "Name.$": "States.ArrayGetItem(States.StringSplit($.detail.object.key, '/'), 0)"
-                },
-                "Resource": "arn:aws:states:::aws-sdk:databrew:describeDataset",
-                "ResultPath": "$.Dataset",
-                "Catch": [
+            "Wait (3)": {
+              "Type": "Wait",
+              "Seconds": 10,
+              "Next": "GetCrawler"
+            },
+            "GetCrawler": {
+              "Type": "Task",
+              "Next": "Choice (4)",
+              "Parameters": {
+                "Name": crawler_name
+              },
+              "Resource": "arn:aws:states:::aws-sdk:glue:getCrawler"
+            },
+            "Choice (4)": {
+              "Type": "Choice",
+              "Choices": [
+                {
+                  "Or": [
                     {
-                        "ErrorEquals": [
-                            "DataBrew.ResourceNotFoundException"
-                        ],
-                        "ResultPath": "$.error.error_detail",
-                        "Next": "Choice Dataset"
-                    }
-                ],
-                "Retry": [
+                      "Variable": "$.Crawler.State",
+                      "StringEquals": "STOPPING"
+                    },
                     {
-                        "ErrorEquals": [
-                            "DataBrew.DataBrewException"
-                        ],
-                        "BackoffRate": 2,
-                        "IntervalSeconds": 1,
-                        "MaxAttempts": 100
+                      "Variable": "$.Crawler.State",
+                      "StringEquals": "READY"
                     }
-                ],
-                "ResultSelector": {
-                    "filename.$": "States.ArrayGetItem(States.StringSplit($.Input.S3InputDefinition.Key, '/'), 1)",
-                    "Name.$": "$.Name"
+                  ],
+                  "Next": "ListObjects"
                 }
+              ],
+              "Default": "Wait (2)"
             },
-            "Choice Dataset": {
-                "Type": "Choice",
-                "Choices": [
-                    {
-                        "Variable": "$.Dataset.Name",
-                        "IsPresent": True,
-                        "Next": "Pass"
-                    }
-                ],
-                "Default": "Create Glue DataBrew Dataset"
+            "Wait (2)": {
+              "Type": "Wait",
+              "Seconds": 25,
+              "Next": "GetCrawler"
             },
-            "Create Glue DataBrew Dataset": {
+            "ListObjects": {
                 "Type": "Task",
                 "Parameters": {
-                    "Input": {
-                        "S3InputDefinition": {
-                            "Bucket.$": "$.detail.bucket.name",
-                            "Key.$": "$.detail.object.key"
-                        }
-                    },
-                    "Name.$": "States.ArrayGetItem(States.StringSplit($.detail.object.key, '/'), 0)"
+                    "Bucket": bucket_name,
+                    "Prefix": f"{bucket_prefix}/DB/",
+                    "Delimiter": "/"
                 },
-                "Resource": "arn:aws:states:::aws-sdk:databrew:createDataset",
-                "Next": "Create Glue DataBrew Profile Job",
-                "ResultPath": "$.Dataset",
-                "Retry": [
-                    {
-                        "ErrorEquals": [
-                            "DataBrew.DataBrewException"
-                        ],
-                        "BackoffRate": 3,
-                        "IntervalSeconds": 1,
-                        "MaxAttempts": 100
-                    }
-                ],
-                "Catch": [
-                    {
-                        "ErrorEquals": [
-                            "DataBrew.ConflictException"
-                        ],
-                        "Next": "DescribeDataset",
-                        "ResultPath": "$.error.error_detail"
-                    }
-                ]
+                "Resource": "arn:aws:states:::aws-sdk:s3:listObjects",
+                "Next": "Map"
             },
-            "Create Glue DataBrew Profile Job": {
-                "Type": "Task",
-                "Parameters": {
-                    "DatasetName.$": "$.Dataset.Name",
-                    "Name.$": "States.Format('{}-PII-Detection-Job',$.Dataset.Name)",
-                    "OutputLocation": {
-                        "Bucket": metadata_bucket,
-                        "Key": "metadata/"
-                    },
-                    "Configuration": {
-                        "EntityDetectorConfiguration": {
-                            "AllowedStatistics": [
-                                {
-                                    "Statistics": [
-                                        "AGGREGATED_GROUP",
-                                        "TOP_VALUES_GROUP",
-                                        "CONTAINING_NUMERIC_VALUES_GROUP"
-                                    ]
-                                }
-                            ],
-                            "EntityTypes": [
-                                "USA_ALL",
-                                "PERSON_NAME",
-                                "EMAIL"
-                            ]
-                        }
-                    },
-                    "RoleArn": databrew_role_arn
-                },
-                "Retry": [
-                    {
-                        "ErrorEquals": [
-                            "DataBrew.DataBrewException"
-                        ],
-                        "BackoffRate": 2,
-                        "IntervalSeconds": 1,
-                        "MaxAttempts": 100
-                    }
-                ],
-                "Catch": [
-                    {
-                        "ErrorEquals": [
-                            "DataBrew.ConflictException"
-                        ],
-                        "Next": "DescribeDataset",
-                        "ResultPath": "$.error.error_detail"
-                    }
-                ],
-                "Resource": "arn:aws:states:::aws-sdk:databrew:createProfileJob",
-                "Next": "Start Glue DataBrew Profile Job",
-                "ResultPath": "$.Profile_Job"
-            },
-            "Pass": {
-                "Type": "Pass",
-                "Next": "Start Glue DataBrew Profile Job",
-                "Parameters": {
-                    "Name.$": "States.Format('{}-PII-Detection-Job',$.Dataset.Name)"
-                },
-                "ResultPath": "$.Profile_Job"
-            },
-            "Start Glue DataBrew Profile Job": {
-                "Type": "Task",
-                "Resource": "arn:aws:states:::databrew:startJobRun.sync",
-                "Parameters": {
-                    "Name.$": "$.Profile_Job.Name"
-                },
-                "Next": "Process Profile Result with Lambda Function",
-                "ResultSelector": {
-                    "Outputs.$": "$.Outputs"
-                },
-                "Retry": [
-                    {
-                        "ErrorEquals": [
-                            "DataBrew.ServiceQuotaExceededException"
-                        ],
-                        "BackoffRate": 2,
-                        "IntervalSeconds": 1,
-                        "MaxAttempts": 100
-                    },
-                    {
-                        "ErrorEquals": [
-                            "DataBrew.AWSGlueDataBrewException"
-                        ],
-                        "BackoffRate": 1.5,
-                        "IntervalSeconds": 1,
-                        "MaxAttempts": 100
-                    },
-                    {
-                        "ErrorEquals": [
-                            "DataBrew.ResourceNotFoundException"
-                        ],
-                        "BackoffRate": 1.5,
-                        "IntervalSeconds": 1,
-                        "MaxAttempts": 10
-                    },
-                    {
-                        "ErrorEquals": [
-                            "DataBrew.ConflictException"
-                        ],
-                        "BackoffRate": 1.5,
-                        "IntervalSeconds": 1,
-                        "MaxAttempts": 100
-                    }
-                ],
-                "ResultPath": "$.Profile_Job"
-            },
-            "Process Profile Result with Lambda Function": {
-                "Type": "Task",
-                "Resource": "arn:aws:states:::lambda:invoke",
-                "Parameters": {
-                    "FunctionName": lambda_arn,
-                    "Payload.$": "$"
-                },
-                "Retry": [
-                    {
-                        "ErrorEquals": [
-                            "Lambda.ServiceException",
-                            "Lambda.AWSLambdaException",
-                            "Lambda.SdkClientException"
-                        ],
-                        "IntervalSeconds": 2,
-                        "MaxAttempts": 6,
-                        "BackoffRate": 2
-                    }
-                ],
-                "Next": "Validate if the Dataset Contains PII Columns",
-                "ResultPath": "$.LambdaTaskResult",
-                "ResultSelector": {
-                    "pii-columns.$": "$.Payload"
-                }
-            },
-            "Validate if the Dataset Contains PII Columns": {
-                "Type": "Choice",
-                "Choices": [
-                    {
-                        "Variable": "$.LambdaTaskResult.pii-columns",
-                        "StringEquals": "No PII columns found.",
-                        "Next": "CopyObject"
-                    }
-                ],
-                "Default": "DescribeRecipe"
-            },
-            "CopyObject": {
-                "Type": "Task",
-                "Next": "No PII Data is Found",
-                "Parameters": {
-                    "Bucket": target_bucket,
-                    "CopySource.$": f"States.Format('{source_bucket}/{{}}', $.detail.object.key)",
-                    "Key.$": "$.detail.object.key"
-                },
-                "Resource": "arn:aws:states:::aws-sdk:s3:copyObject"
-            },
-            "DescribeRecipe": {
-                "Type": "Task",
-                "Next": "Recipe Exist",
-                "Parameters": {
-                    "Name.$": "States.Format('{}-PII-Masking-Recipe',$.Dataset.Name)",
-                    "RecipeVersion": "0.1"
-                },
-                "Resource": "arn:aws:states:::aws-sdk:databrew:describeRecipe",
-                "Catch": [
-                    {
-                        "ErrorEquals": [
-                            "DataBrew.ResourceNotFoundException"
-                        ],
-                        "Next": "Recipe Exist",
-                        "ResultPath": "$.error.error_detail"
-                    }
-                ],
-                "Retry": [
-                    {
-                        "ErrorEquals": [
-                            "DataBrew.DataBrewException"
-                        ],
-                        "BackoffRate": 1,
-                        "IntervalSeconds": 1,
-                        "MaxAttempts": 100
-                    }
-                ],
-                "ResultPath": "$.Recipe"
-            },
-            "Recipe Exist": {
-                "Type": "Choice",
-                "Choices": [
-                    {
-                        "Variable": "$.Recipe.Name",
-                        "IsPresent": True,
-                        "Next": "UpdateRecipeJob"
-                    }
-                ],
-                "Default": "Create Glue DataBrew PII Data Masking Recipe"
-            },
-            "UpdateRecipeJob": {
-                "Type": "Task",
-                "Next": "Pass (1)",
-                "Parameters": {
-                    "Outputs": [
-                        {
-                            "Format": "PARQUET",
-                            "Location": {
-                                "Bucket": target_bucket,
-                                "Key.$": "States.Format('{}/{}',States.ArrayGetItem(States.StringSplit($.detail.object.key, '/'), 0),States.ArrayGetItem(States.StringSplit($.detail.object.key, '/'), 1))"
-                            }
-                        }
-                    ],
-                    "Name.$": "States.Format('{}-PII-Masking-Job',$.Dataset.Name)",
-                    "RoleArn": databrew_role_arn
-                },
-                "Resource": "arn:aws:states:::aws-sdk:databrew:updateRecipeJob",
-                "ResultPath": "$.UpdateRecipe"
-            },
-            "Pass (1)": {
-                "Type": "Pass",
-                "Next": "Start Glue DataBrew Recipe Job",
-                "Parameters": {
-                    "Name.$": "States.Format('{}-PII-Masking-Job',States.ArrayGetItem(States.StringSplit($.Dataset.Name, '-'), 0))"
-                }
-            },
-            "Create Glue DataBrew PII Data Masking Recipe": {
-                "Type": "Task",
-                "Parameters": {
-                    "Name.$": "States.Format('{}-PII-Masking-Recipe',$.Dataset.Name)",
-                    "Steps": [
-                        {
-                            "Action": {
-                                "Operation": "CRYPTOGRAPHIC_HASH",
-                                "Parameters": {
-                                    "secretId": secret_arn,
-                                    "sourceColumns.$": "$.LambdaTaskResult.pii-columns"
-                                }
-                            }
-                        }
-                    ]
-                },
-                "Resource": "arn:aws:states:::aws-sdk:databrew:createRecipe",
-                "ResultPath": "$.Recipe",
-                "Next": "Create Glue DataBrew Project"
-            },
-            "No PII Data is Found": {
-                "Type": "Succeed"
-            },
-            "Create Glue DataBrew Project": {
-                "Type": "Task",
-                "Next": "Create Glue DataBrew Recipe Job",
-                "Parameters": {
-                    "DatasetName.$": "$.Dataset.Name",
-                    "Name.$": "States.Format('{}-PII-Project',$.Dataset.Name)",
-                    "RecipeName.$": "$.Recipe.Name",
-                    "RoleArn": databrew_role_arn
-                },
-                "Resource": "arn:aws:states:::aws-sdk:databrew:createProject",
-                "ResultPath": "$.Project"
-            },
-            "Create Glue DataBrew Recipe Job": {
-                "Type": "Task",
-                "Parameters": {
-                    "ProjectName.$": "$.Project.Name",
-                    "LogSubscription": "DISABLE",
-                    "Outputs": [
-                        {
-                            "Format": "PARQUET",
-                            "Location": {
-                                "Bucket": target_bucket,
-                                "Key.$": "States.Format('{}/{}',States.ArrayGetItem(States.StringSplit($.detail.object.key, '/'), 0),States.ArrayGetItem(States.StringSplit($.detail.object.key, '/'), 1))"
-                            }
-                        }
-                    ],
-                    "Name.$": "States.Format('{}-PII-Masking-Job',$.Dataset.Name)",
-                    "RoleArn": databrew_role_arn
-                },
-                "Resource": "arn:aws:states:::aws-sdk:databrew:createRecipeJob",
-                "Next": "Start Glue DataBrew Recipe Job"
-            },
-            "Start Glue DataBrew Recipe Job": {
-                "Type": "Task",
-                "Resource": "arn:aws:states:::databrew:startJobRun.sync",
-                "Parameters": {
-                    "Name.$": "$.Name"
-                },
-                "Retry": [
-                    {
-                        "ErrorEquals": [
-                            "DataBrew.ServiceQuotaExceededException"
-                        ],
-                        "BackoffRate": 1.5,
-                        "IntervalSeconds": 2,
-                        "MaxAttempts": 99
-                    },
-                    {
-                        "ErrorEquals": [
-                            "DataBrew.AWSGlueDataBrewException"
-                        ],
-                        "BackoffRate": 2,
-                        "IntervalSeconds": 3,
-                        "MaxAttempts": 100
-                    }
-                ],
-                "Next": "Successfully Mask PII Data"
-            },
-            "Successfully Mask PII Data": {
-                "Type": "Succeed"
-            }
-        }
-    }
-
-
-"""Manually triggered for one-off consumption of all objects from source s3"""
-def build_history_ingest_step_function(lambda_arn, metadata_bucket, source_bucket, target_bucket, databrew_role_arn, secret_arn):
-    return {
-        "Comment": "Automatically detect PII columns of data files in existing files located in S3 and reproduce the data files with PII columns masked.",
-        "StartAt": "Map",
-        "States": {
             "Map": {
                 "Type": "Map",
                 "ItemProcessor": {
@@ -412,407 +65,170 @@ def build_history_ingest_step_function(lambda_arn, metadata_bucket, source_bucke
                         "Mode": "DISTRIBUTED",
                         "ExecutionType": "STANDARD"
                     },
-                    "StartAt": "Choice",
+                    "StartAt": "Pass",
                     "States": {
-                        "Choice": {
-                            "Type": "Choice",
-                            "Choices": [
-                                {
-                                    "Variable": "$.Key",
-                                    "StringMatches": "*.parquet",
-                                    "Next": "DescribeDataset"
-                                }
-                            ],
-                            "Default": "Successfully Mask PII Data"
-                        },
-                        "DescribeDataset": {
-                            "Type": "Task",
-                            "Parameters": {
-                                "Name.$": "States.ArrayGetItem(States.StringSplit($.Key, '/'), 0)"
-                            },
-                            "Resource": "arn:aws:states:::aws-sdk:databrew:describeDataset",
-                            "ResultPath": "$.detail",
-                            "Catch": [
-                                {
-                                    "ErrorEquals": [
-                                        "DataBrew.ResourceNotFoundException"
-                                    ],
-                                    "ResultPath": "$.error_detail",
-                                    "Next": "Choice Dataset"
-                                }
-                            ],
-                            "Retry": [
-                                {
-                                    "ErrorEquals": [
-                                        "DataBrew.DataBrewException"
-                                    ],
-                                    "BackoffRate": 2,
-                                    "IntervalSeconds": 1,
-                                    "MaxAttempts": 100
-                                }
-                            ],
-                            "Next": "Choice Dataset"
-                        },
-                        "Choice Dataset": {
-                            "Type": "Choice",
-                            "Choices": [
-                                {
-                                    "Variable": "$.detail.Name",
-                                    "IsPresent": True,
-                                    "Next": "Pass"
-                                }
-                            ],
-                            "Default": "Create Glue DataBrew Dataset"
-                        },
                         "Pass": {
                             "Type": "Pass",
+                            "Next": "Athena StartQueryExecution",
                             "Parameters": {
-                                "Name.$": "States.Format('{}-PII-Detection-Job',$.detail.Name)"
-                            },
-                            "Next": "Start Glue DataBrew Profile Job",
-                            "ResultPath": "$.detail"
+                                "Name.$": "States.ArrayGetItem(States.StringSplit($.Prefix, '/'), 2)",
+                                "Quote": "'",
+                                "Athena_Datasource_Name": athena_datasource_name,
+                                "Catalog_Table_Name": catalog_db_name
+                            }
                         },
-                        "Create Glue DataBrew Dataset": {
+                        "Athena StartQueryExecution": {
                             "Type": "Task",
+                            "Resource": "arn:aws:states:::athena:startQueryExecution",
                             "Parameters": {
-                                "Input": {
-                                    "S3InputDefinition": {
-                                        "Bucket": source_bucket,
-                                        "Key.$": "States.Format('{}/<.*>.parquet',States.ArrayGetItem(States.StringSplit($.Key, '/'), 0))"
-                                    }
-                                },
-                                "Name.$": "States.ArrayGetItem(States.StringSplit($.Key, '/'),0)"
+                                "QueryString.$": "States.Format('Select column_name from \"{}\".\"sys\".\"all_tab_columns\" where table_name = {}{}{} and owner = test',$.Athena_Datasource_Name,$.Quote,$.Name,$.Quote,$.Quote,$.Quote)",
+                                "WorkGroup": "primary",
+                                "ResultConfiguration": {
+                                    "OutputLocation": f"s3://{result_bucket}/athena-result/"
+                                }
                             },
-                            "Resource": "arn:aws:states:::aws-sdk:databrew:createDataset",
-                            "Next": "Create Glue DataBrew Profile Job",
-                            "Retry": [
+                            "Next": "Athena GetQueryExecution",
+                            "ResultPath": "$.Query1"
+                        },
+                        "Athena GetQueryExecution": {
+                            "Type": "Task",
+                            "Resource": "arn:aws:states:::athena:getQueryExecution",
+                            "Parameters": {
+                                "QueryExecutionId.$": "$.Query1.QueryExecutionId"
+                            },
+                            "Next": "Choice (1)",
+                            "ResultPath": "$.QueryExecution"
+                        },
+                        "Choice (1)": {
+                            "Type": "Choice",
+                            "Choices": [
                                 {
-                                    "ErrorEquals": [
-                                        "DataBrew.DataBrewException"
-                                    ],
-                                    "BackoffRate": 3,
-                                    "IntervalSeconds": 1,
-                                    "MaxAttempts": 100
+                                    "Variable": "$.QueryExecution.QueryExecution.Status.State",
+                                    "StringEquals": "SUCCEEDED",
+                                    "Next": "Athena GetQueryResults"
                                 }
                             ],
-                            "ResultPath": "$.detail",
-                            "Catch": [
-                                {
-                                    "ErrorEquals": [
-                                        "DataBrew.ConflictException"
-                                    ],
-                                    "Next": "DescribeDataset",
-                                    "ResultPath": "$.error_detail"
-                                }
-                            ]
+                            "Default": "Wait"
                         },
-                        "Create Glue DataBrew Profile Job": {
+                        "Wait": {
+                            "Type": "Wait",
+                            "Seconds": 5,
+                            "Next": "Athena GetQueryExecution"
+                        },
+                        "Athena GetQueryResults": {
                             "Type": "Task",
+                            "Resource": "arn:aws:states:::athena:getQueryResults",
                             "Parameters": {
-                                "DatasetName.$": "$.detail.Name",
-                                "Name.$": "States.Format('{}-PII-Detection-Job',$.detail.Name)",
-                                "OutputLocation": {
-                                    "Bucket": metadata_bucket,
-                                    "Key": "metadata/"
-                                },
-                                "Configuration": {
-                                    "EntityDetectorConfiguration": {
-                                        "AllowedStatistics": [
-                                            {
-                                                "Statistics": [
-                                                    "AGGREGATED_GROUP",
-                                                    "TOP_VALUES_GROUP",
-                                                    "CONTAINING_NUMERIC_VALUES_GROUP"
-                                                ]
-                                            }
-                                        ],
-                                        "EntityTypes": [
-                                            "USA_ALL",
-                                            "PERSON_NAME",
-                                            "EMAIL"
-                                        ]
-                                    }
-                                },
-                                "RoleArn": databrew_role_arn
+                                "MaxResults": 100,
+                                "QueryExecutionId.$": "$.Query1.QueryExecutionId"
                             },
-                            "Resource": "arn:aws:states:::aws-sdk:databrew:createProfileJob",
-                            "Next": "Start Glue DataBrew Profile Job",
-                            "Retry": [
-                                {
-                                    "ErrorEquals": [
-                                        "DataBrew.DataBrewException"
-                                    ],
-                                    "BackoffRate": 2,
-                                    "IntervalSeconds": 1,
-                                    "MaxAttempts": 100
-                                }
-                            ],
-                            "ResultPath": "$.detail",
-                            "Catch": [
-                                {
-                                    "ErrorEquals": [
-                                        "DataBrew.ConflictException"
-                                    ],
-                                    "Next": "DescribeDataset",
-                                    "ResultPath": "$.error_detail"
-                                }
-                            ]
+                            "Next": "ParseColumns",
+                            "ResultPath": "$.QueryResult"
                         },
-                        "Start Glue DataBrew Profile Job": {
-                            "Type": "Task",
-                            "Resource": "arn:aws:states:::databrew:startJobRun.sync",
-                            "Parameters": {
-                                "Name.$": "$.detail.Name"
-                            },
-                            "ResultSelector": {
-                                "DatasetName.$": "$.DatasetName",
-                                "Outputs.$": "$.Outputs"
-                            },
-                            "Next": "Process Profile Result with Lambda Function",
-                            "Retry": [
-                                {
-                                    "ErrorEquals": [
-                                        "DataBrew.ServiceQuotaExceededException"
-                                    ],
-                                    "BackoffRate": 2,
-                                    "IntervalSeconds": 1,
-                                    "MaxAttempts": 100
-                                },
-                                {
-                                    "ErrorEquals": [
-                                        "DataBrew.AWSGlueDataBrewException"
-                                    ],
-                                    "BackoffRate": 1.5,
-                                    "IntervalSeconds": 1,
-                                    "MaxAttempts": 100
-                                },
-                                {
-                                    "ErrorEquals": [
-                                        "DataBrew.ResourceNotFoundException"
-                                    ],
-                                    "BackoffRate": 1.5,
-                                    "IntervalSeconds": 1,
-                                    "MaxAttempts": 10
-                                },
-                                {
-                                    "ErrorEquals": [
-                                        "DataBrew.ConflictException"
-                                    ],
-                                    "BackoffRate": 1.5,
-                                    "IntervalSeconds": 30,
-                                    "MaxAttempts": 100
-                                }
-                            ],
-                            "ResultPath": "$.detail"
-                        },
-                        "Process Profile Result with Lambda Function": {
+                        "ParseColumns": {
                             "Type": "Task",
                             "Resource": "arn:aws:states:::lambda:invoke",
                             "Parameters": {
-                                "FunctionName": lambda_arn,
-                                "Payload.$": "$"
+                                "Payload.$": "$",
+                                "FunctionName": lambda_arn
                             },
                             "Retry": [
                                 {
                                     "ErrorEquals": [
                                         "Lambda.ServiceException",
                                         "Lambda.AWSLambdaException",
-                                        "Lambda.SdkClientException"
+                                        "Lambda.SdkClientException",
+                                        "Lambda.TooManyRequestsException"
                                     ],
                                     "IntervalSeconds": 2,
                                     "MaxAttempts": 6,
                                     "BackoffRate": 2
                                 }
                             ],
-                            "ResultPath": "$.LambdaTaskResult",
+                            "Next": "Athena StartQueryExecution (1)",
                             "ResultSelector": {
-                                "pii-columns.$": "$.Payload"
+                                "table_columns.$": "$.Payload"
                             },
-                            "Next": "Validate if the Dataset Contains PII Columns"
+                            "ResultPath": "$.LambdaTaskResult"
                         },
-                        "Validate if the Dataset Contains PII Columns": {
+                        "Athena StartQueryExecution (1)": {
+                            "Type": "Task",
+                            "Resource": "arn:aws:states:::athena:startQueryExecution",
+                            "Parameters": {
+                                "QueryString.$": "States.Format('Select {} from {} EXCEPT SELECT {} from \"AwsDataCatalog\".\"{}\".\"{}\"',$.LambdaTaskResult.table_columns, $.Athena_Datasource_Name, $.Name,$.LambdaTaskResult.table_columns,$.Catalog_Table_Name,$.Name)",
+                                "WorkGroup": "primary",
+                                "ResultConfiguration": {
+                                    "OutputLocation": f"s3://{result_bucket}/athena-result/"
+                                }
+                            },
+                            "Next": "Athena GetQueryExecution (1)",
+                            "ResultPath": "$.ComparisonResult"
+                        },
+                        "Athena GetQueryExecution (1)": {
+                            "Type": "Task",
+                            "Resource": "arn:aws:states:::athena:getQueryExecution",
+                            "Parameters": {
+                                "QueryExecutionId.$": "$.ComparisonResult.QueryExecutionId"
+                            },
+                            "Next": "Choice (2)",
+                            "ResultPath": "$.QueryExecution"
+                        },
+                        "Choice (2)": {
                             "Type": "Choice",
                             "Choices": [
                                 {
-                                    "Variable": "$.LambdaTaskResult.pii-columns",
-                                    "StringEquals": "No PII columns found.",
-                                    "Next": "CopyObject"
+                                    "Variable": "$.QueryExecution.QueryExecution.Status.State",
+                                    "StringEquals": "SUCCEEDED",
+                                    "Next": "Athena GetQueryResults (1)"
                                 }
                             ],
-                            "Default": "DescribeRecipe"
+                            "Default": "Wait (1)"
                         },
-                        "CopyObject": {
+                        "Wait (1)": {
+                            "Type": "Wait",
+                            "Seconds": 5,
+                            "Next": "Athena GetQueryExecution (1)"
+                        },
+                        "Athena GetQueryResults (1)": {
                             "Type": "Task",
-                            "Next": "No PII Data is Found",
+                            "Resource": "arn:aws:states:::athena:getQueryResults",
                             "Parameters": {
-                                "Bucket": target_bucket,
-                                "CopySource.$": "States.Format('uat-stage-clg-datalake-u-clgdatalakeuatrawbucketc-1a0xlon0x63t1/{}', $.Key)",
-                                "Key.$": "$.Key",
-                                "Acl": "bucket-owner-full-control"
+                                "MaxResults": 10,
+                                "QueryExecutionId.$": "$.QueryExecution.QueryExecution.QueryExecutionId"
                             },
-                            "Resource": "arn:aws:states:::aws-sdk:s3:copyObject"
+                            "Next": "Pass (1)"
                         },
-                        "DescribeRecipe": {
-                            "Type": "Task",
-                            "Parameters": {
-                                "Name.$": "States.Format('{}-PII-Masking-Recipe',$.detail.DatasetName)",
-                                "RecipeVersion": "0.1"
-                            },
-                            "Resource": "arn:aws:states:::aws-sdk:databrew:describeRecipe",
-                            "Catch": [
-                                {
-                                    "ErrorEquals": [
-                                        "DataBrew.ResourceNotFoundException"
-                                    ],
-                                    "ResultPath": "$.error_detail",
-                                    "Next": "Recipe Exist"
-                                }
-                            ],
-                            "ResultPath": "$.DatasetName",
-                            "Next": "Recipe Exist",
-                            "Retry": [
-                                {
-                                    "ErrorEquals": [
-                                        "DataBrew.DataBrewException"
-                                    ],
-                                    "BackoffRate": 1,
-                                    "IntervalSeconds": 1,
-                                    "MaxAttempts": 100
-                                }
-                            ]
-                        },
-                        "Recipe Exist": {
-                            "Type": "Choice",
-                            "Choices": [
-                                {
-                                    "Variable": "$.DatasetName.Name",
-                                    "IsPresent": True,
-                                    "Next": "UpdateRecipeJob"
-                                }
-                            ],
-                            "Default": "Create Glue DataBrew PII Data Masking Recipe"
-                        },
-                        "UpdateRecipeJob": {
-                            "Type": "Task",
-                            "Next": "Pass (2)",
-                            "Parameters": {
-                                "Outputs": [
-                                    {
-                                        "Format": "PARQUET",
-                                        "Location": {
-                                            "Bucket": target_bucket,
-                                            "Key.$": "States.Format('{}/{}',States.ArrayGetItem(States.StringSplit($.Key, '/'), 0),States.ArrayGetItem(States.StringSplit($.Key, '/'), 1))"
-                                        }
-                                    }
-                                ],
-                                "Name.$": "States.Format('{}-PII-Masking-Job',$.detail.DatasetName)",
-                                "RoleArn": databrew_role_arn
-                            },
-                            "Resource": "arn:aws:states:::aws-sdk:databrew:updateRecipeJob",
-                            "ResultPath": "$.UpdateRecipe"
-                        },
-                        "Create Glue DataBrew PII Data Masking Recipe": {
-                            "Type": "Task",
-                            "Parameters": {
-                                "Name.$": "States.Format('{}-PII-Masking-Recipe',$.detail.DatasetName)",
-                                "Steps": [
-                                    {
-                                        "Action": {
-                                            "Operation": "CRYPTOGRAPHIC_HASH",
-                                            "Parameters": {
-                                                "secretId": secret_arn,
-                                                "sourceColumns.$": "$.LambdaTaskResult.pii-columns"
-                                            }
-                                        }
-                                    }
-                                ]
-                            },
-                            "Resource": "arn:aws:states:::aws-sdk:databrew:createRecipe",
-                            "ResultPath": "$.Recipe",
-                            "Next": "Create Glue DataBrew Project"
-                        },
-                        "Create Glue DataBrew Project": {
-                            "Type": "Task",
-                            "Parameters": {
-                                "DatasetName.$": "$.detail.DatasetName",
-                                "Name.$": "States.Format('{}-PII-Project',$.detail.DatasetName)",
-                                "RecipeName.$": "$.Recipe.Name",
-                                "RoleArn": databrew_role_arn
-                            },
-                            "Resource": "arn:aws:states:::aws-sdk:databrew:createProject",
-                            "ResultPath": "$.Project",
-                            "Next": "Create Glue DataBrew Recipe Job"
-                        },
-                        "Create Glue DataBrew Recipe Job": {
-                            "Type": "Task",
-                            "Parameters": {
-                                "ProjectName.$": "$.Project.Name",
-                                "LogSubscription": "DISABLE",
-                                "Outputs": [
-                                    {
-                                        "Format": "PARQUET",
-                                        "Location": {
-                                            "Bucket": target_bucket,
-                                            "Key.$": "States.Format('{}/{}',States.ArrayGetItem(States.StringSplit($.Key, '/'), 0),States.ArrayGetItem(States.StringSplit($.Key, '/'), 1))"
-                                        }
-                                    }
-                                ],
-                                "Name.$": "States.Format('{}-PII-Masking-Job',$.detail.DatasetName)",
-                                "RoleArn": databrew_role_arn
-                            },
-                            "Resource": "arn:aws:states:::aws-sdk:databrew:createRecipeJob",
-                            "Next": "Start Glue DataBrew Recipe Job"
-                        },
-                        "Start Glue DataBrew Recipe Job": {
-                            "Type": "Task",
-                            "Resource": "arn:aws:states:::databrew:startJobRun.sync",
-                            "Parameters": {
-                                "Name.$": "$.Name"
-                            },
-                            "Next": "Successfully Mask PII Data",
-                            "Retry": [
-                                {
-                                    "ErrorEquals": [
-                                        "DataBrew.ServiceQuotaExceededException"
-                                    ],
-                                    "BackoffRate": 1.5,
-                                    "IntervalSeconds": 2,
-                                    "MaxAttempts": 99
-                                },
-                                {
-                                    "ErrorEquals": [
-                                        "DataBrew.AWSGlueDataBrewException"
-                                    ],
-                                    "BackoffRate": 2,
-                                    "IntervalSeconds": 3,
-                                    "MaxAttempts": 100
-                                }
-                            ]
-                        },
-                        "Successfully Mask PII Data": {
-                            "Type": "Succeed"
-                        },
-                        "Pass (2)": {
+                        "Pass (1)": {
                             "Type": "Pass",
-                            "Next": "Start Glue DataBrew Recipe Job",
+                            "Next": "Choice (3)",
                             "Parameters": {
-                                "Name.$": "States.Format('{}-PII-Masking-Job',$.detail.DatasetName)"
+                                "ArrayLength.$": "States.ArrayLength($.ResultSet.Rows)"
                             }
                         },
-                        "No PII Data is Found": {
+                        "Choice (3)": {
+                            "Type": "Choice",
+                            "Choices": [
+                                {
+                                    "Variable": "$.ArrayLength",
+                                    "NumericGreaterThan": 1,
+                                    "Next": "Fail"
+                                }
+                            ],
+                            "Default": "Success"
+                        },
+                        "Fail": {
+                            "Type": "Fail"
+                        },
+                        "Success": {
                             "Type": "Succeed"
                         }
                     }
                 },
-                "MaxConcurrency": 1000,
-                "ItemReader": {
-                    "Resource": "arn:aws:states:::s3:listObjectsV2",
-                    "Parameters": {
-                        "Bucket": source_bucket
-                    }
-                },
                 "End": True,
-                "Label": "Map"
+                "Label": "Map",
+                "MaxConcurrency": 10,
+                "ItemsPath": "$.CommonPrefixes",
+                "ToleratedFailurePercentage": 50
             }
         }
     }

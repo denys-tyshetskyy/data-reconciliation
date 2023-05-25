@@ -1,10 +1,10 @@
 import aws_cdk as core
 import aws_cdk.assertions as assertions
 
-from data_masking.data_masking_stack import DataMaskingStack
+from data_reconciliation.data_reconsiliation_stack import DataMaskingStack
 
 # example tests. To run these tests, uncomment this file along with the example
-# resource in data_masking/data_masking_stack.py
+# resource in data_reconciliation/data_reconsiliation_stack.py
 def test_sqs_queue_created():
     app = core.App()
     stack = DataMaskingStack(app, "data-masking")
